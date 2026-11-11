@@ -188,7 +188,7 @@ starlette==1.10.0
     # via fastapi
 stripe==16.1.0
     # via backend (pyproject.toml)
-tenacity==9.1.4
+tenacity==9.2.1
     # via google-genai
 truststore==0.10.5
     # via
