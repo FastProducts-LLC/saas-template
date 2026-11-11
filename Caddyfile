@@ -1,0 +1,23 @@
+# /opt/prd-shared/Caddyfile
+# ⚠️  DO NOT add site blocks here. Add caddy.d/<app>.caddy instead.
+# This file defines shared snippets and imports per-app vhosts.
+# The `import sites/*.caddy` line maps to the ./caddy.d mount in docker-compose.prod.yml.
+{
+	# Uncomment to use a staging CA while testing (avoids rate limits):
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+	# email ops@your-domain.com
+}
+
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}
+
+# Per-app vhosts live one file per app in caddy.d/ (mounted at /etc/caddy/sites/).
+# This MUST be the last line.
+import sites/*.caddy

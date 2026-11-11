@@ -1,0 +1,41 @@
+# Production image — builds the static bundle and serves it with nginx.
+# The dev image (Dockerfile) runs the Vite dev server with HMR instead.
+
+# --- 1. Build stage: deps first (cached), then code ---
+FROM node:24-alpine AS builder
+
+WORKDIR /app
+
+# package-lock.json is committed; `npm ci` installs exactly what it pins
+# (reproducible, and fails loudly if the lock and manifest drift).
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
+
+COPY . .
+
+# Vite inlines import.meta.env.VITE_* at build time — Sentry's DSN must come
+# in as a build arg (CI passes the VITE_SENTRY_DSN repo variable); empty
+# disables Sentry entirely.
+ARG VITE_SENTRY_DSN=""
+ENV VITE_SENTRY_DSN=$VITE_SENTRY_DSN
+
+# GA4 Measurement ID (CI passes the VITE_GA_MEASUREMENT_ID repo variable);
+# empty disables analytics and the consent banner entirely.
+ARG VITE_GA_MEASUREMENT_ID=""
+ENV VITE_GA_MEASUREMENT_ID=$VITE_GA_MEASUREMENT_ID
+
+RUN npm run build
+
+# --- 2. Runtime stage: nginx serving the static bundle ---
+# Unprivileged nginx: runs as uid 101 (non-root) and listens on 8080.
+FROM nginxinc/nginx-unprivileged:alpine
+
+# Entry point runs envsubst on *.template files, so ${BACKEND_URL} is
+# resolved at container start (default set below).
+COPY nginx.conf /etc/nginx/templates/default.conf.template
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+ENV BACKEND_URL=http://backend:8000
+
+EXPOSE 8080

@@ -1,0 +1,26 @@
+/* GENERATED FILE — do not edit by hand. Source: shared/brand.toml (python3 scripts/gen_brand.py) */
+:root {
+  --ink: #0c0c0b;
+  --ink-soft: #1c1c1b;
+  --slate: #6b6a67;
+  --mist: #f4f2f0;
+  --paper: #faf9f7;
+  --line: #e5e2dd;
+  --teal: #1c1c1b;
+  --teal-deep: #0c0c0b;
+  --teal-glow: #e4f222;
+  --success: #1f7a3d;
+  --danger: #b45309;
+  --info: #0369a1;
+  --canvas: #ffffff;
+  --sand: #f4f2f0;
+  --sand-line: #e5e2dd;
+  --carbon: #0c0c0b;
+  --carbon-soft: #1c1c1b;
+  --lime: #e4f222;
+  --lime-deep: #d3e11c;
+  --font-display: "Inter Variable", system-ui, sans-serif;
+  --font-body: "Inter Variable", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-marketing: "Inter Variable", system-ui, sans-serif;
+}

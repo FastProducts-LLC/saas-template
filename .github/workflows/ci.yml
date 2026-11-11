@@ -1,0 +1,128 @@
+# Tests for every pull request and push to main. Needs no secrets, so it runs
+# the same way on forks. The deploy workflow (deploy-myapp.yml) is separate and
+# opt-in; see "Production deploy" in README.md.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: app
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U app"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      valkey:
+        image: valkey/valkey:9-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # conftest.py creates an isolated app_test DB on this server.
+      DATABASE_URL: postgresql+asyncpg://app:app@localhost:5432/app
+      REDIS_URL: redis://localhost:6379/0
+      # Celery defaults point at the local dev port (21430); without these,
+      # enqueueing (e.g. welcome emails) retries forever and hangs the suite.
+      CELERY_BROKER_URL: redis://localhost:6379/1
+      CELERY_RESULT_BACKEND: redis://localhost:6379/2
+      SECRET_KEY: ci-only-test-secret-key-not-production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - name: Generated artifacts up to date (errors, policy, enums, events, brand)
+        run: |
+          python3 scripts/gen_errors.py --check
+          python3 scripts/gen_policy.py --check
+          python3 scripts/gen_enums.py --check
+          python3 scripts/gen_events.py --check
+          python3 scripts/gen_brand.py --check
+          python3 scripts/check_env_examples.py
+      - name: Install deps
+        working-directory: backend
+        run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Ruff (lint + format)
+        working-directory: backend
+        run: |
+          ruff check .
+          ruff format --check .
+      - name: Pytest
+        working-directory: backend
+        run: pytest
+
+  test-frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install deps
+        working-directory: frontend
+        run: npm ci
+      - name: Typecheck
+        working-directory: frontend
+        run: npx tsc -b
+      - name: Lint and format
+        working-directory: frontend
+        run: |
+          npx eslint .
+          npx prettier --check .
+      - name: Onboarding-tour selectors exist
+        run: python3 scripts/validate_tours.py frontend/src
+      - name: Vitest
+        working-directory: frontend
+        run: npx vitest run
+      - name: Production build
+        working-directory: frontend
+        run: npm run build
+
+  test-mobile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Install deps
+        working-directory: mobile
+        run: npm ci
+      - name: Typecheck
+        working-directory: mobile
+        run: npm run typecheck
+      - name: Tests
+        working-directory: mobile
+        run: npm test

@@ -1,0 +1,156 @@
+# Ports 21427-21431 (base derived from hash of "template", verified free
+# across ~/Desktop/Dev compose files).
+name: myapp
+
+# Shared by backend, worker, and beat so the three stay in lockstep.
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+asyncpg://app:app@db:5432/app
+  REDIS_URL: redis://valkey:6379/0
+  CELERY_BROKER_URL: redis://valkey:6379/1
+  CELERY_RESULT_BACKEND: redis://valkey:6379/2
+  SMTP_HOST: mailpit
+  SMTP_PORT: 1025
+  FRONTEND_URL: http://localhost:21427
+  CORS_ORIGINS: '["http://localhost:21427"]'
+
+services:
+  db:
+    # Pinned deliberately to a specific patch (latest stable 16.x as of 2026-06).
+    # Must stay on major 16 — the local pgdata volume is 16-format.
+    image: postgres:16.15-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    ports:
+      # Loopback only: app/app credentials must never be reachable from the LAN.
+      - "127.0.0.1:21429:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  valkey:
+    # Redis-compatible (same protocol/clients); REDIS_URL keeps its name.
+    # Pinned deliberately to a specific patch (latest stable 8.x as of 2026-06).
+    image: valkey/valkey:9.1.3-alpine
+    ports:
+      # Loopback only: no auth, and it holds rate limits + the Celery broker.
+      - "127.0.0.1:21430:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mailpit:
+    # Pinned deliberately to a specific patch (latest stable as of 2026-06).
+    image: axllent/mailpit:v1.33.1
+    ports:
+      # Loopback only: the UI has no auth and shows every password-reset link.
+      - "127.0.0.1:21431:8025" # web UI (SMTP stays internal on 1025)
+
+  backend:
+    build: ./backend
+    # --proxy-headers so the audit trail records the browser host's IP (the
+    # Vite dev proxy sends X-Forwarded-For), matching the prod Dockerfile CMD.
+    # Unlike prod, this port IS published (mobile device testing), so
+    # X-Forwarded-For is trusted only from Docker bridge networks
+    # (172.16.0.0/12, where the Vite container lives) rather than "*" —
+    # otherwise any LAN client could spoof its IP past the per-IP rate limits.
+    # Caveat: Docker Desktop (macOS/Windows) NATs published-port traffic
+    # through the bridge gateway, so there this narrows nothing; on Linux
+    # hosts LAN clients keep their real source address and are not trusted.
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --proxy-headers --forwarded-allow-ips '172.16.0.0/12'"
+    env_file:
+      - path: .env
+        required: false
+    environment: *backend-env
+    volumes:
+      - ./backend:/app
+      # Registry-drift tests read the cross-stack catalogs (shared/*.toml).
+      - ./shared:/shared:ro
+    ports:
+      # Published on all interfaces on purpose: the mobile app on a physical
+      # device reaches the API at <LAN-IP>:21428 (see mobile/README.md). Use
+      # "127.0.0.1:21428:8000" if you never test on a device.
+      - "21428:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+
+  worker:
+    build: ./backend
+    # Celery has no --reload; watchfiles restarts the worker on code changes.
+    # Dedicated to the default (short/latency-sensitive) queue so long heavy
+    # jobs can never starve emails and sweeps — mirrors the prod split.
+    command: watchfiles --filter python "celery -A app.core.celery_app worker -Q default --loglevel info" app
+    env_file:
+      - path: .env
+        required: false
+    environment: *backend-env
+    volumes:
+      - ./backend:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+
+  worker-heavy:
+    build: ./backend
+    command: watchfiles --filter python "celery -A app.core.celery_app worker -Q heavy --loglevel info" app
+    env_file:
+      - path: .env
+        required: false
+    environment: *backend-env
+    volumes:
+      - ./backend:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+
+  beat:
+    # Scheduler for celery_app.conf.beat_schedule — remove if you have no
+    # periodic tasks. Exactly one instance must run (duplicates = double-fires).
+    build: ./backend
+    command: celery -A app.core.celery_app beat --loglevel info -s /tmp/celerybeat-schedule
+    env_file:
+      - path: .env
+        required: false
+    environment: *backend-env
+    volumes:
+      - ./backend:/app
+    depends_on:
+      valkey:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    environment:
+      VITE_PROXY_TARGET: http://backend:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      # All interfaces on purpose (phone/tablet browser testing). The data
+      # services above are loopback-only.
+      - "21427:5173"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

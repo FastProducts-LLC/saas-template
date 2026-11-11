@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 12" width="512" height="384">
+  <!-- Placeholder mark (Carbon & Lime ledger glyph); replace with your brand's. -->
+  <rect x="0" y="0" width="16" height="2" rx="1" fill="#e4f222"/>
+  <rect x="0" y="5" width="16" height="2" rx="1" fill="#ffffff" fill-opacity="0.85"/>
+  <rect x="0" y="10" width="10" height="2" rx="1" fill="#ffffff" fill-opacity="0.55"/>
+</svg>

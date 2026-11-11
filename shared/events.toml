@@ -1,0 +1,209 @@
+# Product-analytics event registry — the single source of truth for event names.
+#
+# After editing, run:  python3 scripts/gen_events.py
+# which regenerates
+#   frontend/src/shared/lib/events.ts                 (EVENTS for track() call sites)
+#   backend/app/domains/analytics/domain/events.py    (ingest allowlist + server names)
+# CI runs `gen_events.py --check`; the contract test in
+# backend/tests/test_analytics.py fails on drift too.
+#
+# Rules
+#   - snake_case object_action, <= 40 chars (GA4 limit), <= 25 params per event.
+#   - [client.*] events are fired by the browser through track() and are the ONLY
+#     names POST /api/events accepts. [server.*] events are written by the
+#     backend at the success point (webhooks, workers) and can never be forged
+#     from a browser. A name lives in exactly one of the two tables.
+#   - params are identifiers, enums, and numbers ONLY. Never content, prompts,
+#     message text, tokens, passwords, or email — in either sink.
+#   - `ga` (client only, optional) maps the event onto a GA4 recommended event
+#     name so GA's built-in reports keep working; the first-party table always
+#     stores the registry name.
+#   - Names are permanent once shipped: historical rows keep the old name, so
+#     rename = new event + stop firing the old one.
+#
+# The activation event is `generation_completed` (first delivered AI
+# generation). Every funnel reads off it — if you swap the flagship feature,
+# move the activation marker with it.
+
+# --- 1. Acquisition & landing -------------------------------------------------
+
+[client.cta_clicked]
+area = "acquisition"
+params = ["cta", "location"]
+description = "Landing/pricing call-to-action clicked. Anonymous, so GA-only in practice."
+
+# --- 2. Onboarding & activation -----------------------------------------------
+# The activation marker itself is the server event `generation_completed`.
+
+[client.onboarding_tour_completed]
+area = "onboarding"
+params = ["tour"]
+description = "A guided product tour was walked to its last step. tour: dashboard."
+
+[client.onboarding_tour_skipped]
+area = "onboarding"
+params = ["tour"]
+description = "A guided product tour was dismissed before the end. tour: dashboard."
+
+# --- 3. Auth & account lifecycle ----------------------------------------------
+
+[client.signup_started]
+area = "auth"
+params = []
+ga = "sign_up_start"
+description = "Registration form rendered. Anonymous, so GA-only in practice."
+
+[client.user_signed_up]
+area = "auth"
+params = ["method", "marketing_opt_in"]
+ga = "sign_up"
+description = "Registration succeeded and the new session is live."
+
+[client.user_logged_in]
+area = "auth"
+params = ["method"]
+ga = "login"
+description = "Interactive login succeeded (not silent session restore)."
+
+[client.user_logged_out]
+area = "auth"
+params = []
+description = "Logout requested. Fired just before the logout call, while the session can still authenticate the event."
+
+[client.password_reset_requested]
+area = "auth"
+params = []
+description = "Forgot-password form submitted. Anonymous, so GA-only in practice."
+
+# --- 5. Monetization (client = intent only; server = truth) -------------------
+
+[client.checkout_started]
+area = "billing"
+params = ["product", "plan"]
+ga = "begin_checkout"
+description = "Stripe Checkout session created, just before the redirect. product: credit_pack | community."
+
+[client.billing_portal_opened]
+area = "billing"
+params = ["product"]
+description = "Stripe billing portal session created. product: credits | community."
+
+[server.credit_pack_purchased]
+area = "billing"
+params = ["pack", "credits", "amount_cents"]
+description = "checkout.session.completed for a credit pack, first delivery only (after the grant)."
+
+[server.community_subscription_activated]
+area = "billing"
+params = []
+description = "Community membership became premium via Stripe (transition only, not redelivery)."
+
+[server.community_subscription_canceled]
+area = "billing"
+params = []
+description = "Community subscription deleted at Stripe; membership back to free."
+
+# --- 4. Core feature usage ----------------------------------------------------
+
+[server.generation_requested]
+area = "core"
+params = ["kind", "credits_cost"]
+description = "AI generation accepted and credits held (web, mobile, and API callers alike)."
+
+[server.generation_completed]
+area = "core"
+params = ["kind", "credits_cost", "duration_ms"]
+description = "ACTIVATION. AI generation delivered and its credit hold captured."
+
+[server.generation_failed]
+area = "core"
+params = ["kind"]
+description = "AI generation failed at the provider; credits released."
+
+[server.llm_call_completed]
+area = "core"
+params = ["provider", "credits_cost"]
+description = "Metered text completion delivered and its credit hold captured."
+
+# --- 6. Collaboration ---------------------------------------------------------
+
+[client.org_created]
+area = "collaboration"
+params = []
+description = "Organization created."
+
+[client.invite_sent]
+area = "collaboration"
+params = ["role"]
+description = "Teammate invitation created."
+
+[client.invite_accepted]
+area = "collaboration"
+params = []
+description = "Invitation accepted; the user joined an organization."
+
+# --- 8. Settings & extensibility ----------------------------------------------
+
+[client.api_key_created]
+area = "settings"
+params = []
+description = "API key issued."
+
+[client.api_key_revoked]
+area = "settings"
+params = []
+description = "API key revoked."
+
+[client.settings_updated]
+area = "settings"
+params = ["section"]
+description = "A settings form saved. section: profile_name | password | marketing | org_name | org_domain."
+
+# --- Unique area: community ---------------------------------------------------
+
+[client.community_joined]
+area = "community"
+params = []
+description = "Community profile created (member joined the directory)."
+
+[client.community_profile_updated]
+area = "community"
+params = []
+description = "Community profile edited."
+
+[client.community_conversation_started]
+area = "community"
+params = []
+description = "New 1:1 conversation opened with another member."
+
+[client.community_message_sent]
+area = "community"
+params = []
+description = "Direct message sent. Never carries the body or recipient."
+
+# --- Organization plans and uploads -------------------------------------------
+
+[server.plan_subscribed]
+area = "billing"
+params = ["organization_id", "plan", "interval"]
+description = "Organization acquired a paid subscription; emitted once for the transition."
+
+[server.plan_changed]
+area = "billing"
+params = ["organization_id", "plan", "interval"]
+description = "Organization subscription plan or billing interval changed."
+
+[server.plan_canceled]
+area = "billing"
+params = ["organization_id", "plan"]
+description = "Organization subscription canceled at the payment provider."
+
+[client.plan_checkout_started]
+area = "billing"
+params = ["plan", "interval"]
+description = "Organization plan checkout session created, just before the redirect."
+
+[client.avatar_uploaded]
+area = "settings"
+params = ["file_id"]
+description = "Avatar upload confirmed successfully. Never carries the file URL or filename."

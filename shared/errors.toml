@@ -1,0 +1,918 @@
+# Error catalog — THE single source of truth for every error in the system.
+#
+# Regenerate the derived files after any change here:
+#   python3 scripts/gen_errors.py
+# CI drift check:
+#   python3 scripts/gen_errors.py --check
+#
+# Generates:
+#   backend/app/core/error_codes.py   (code -> status/severity/title/user_message)
+#   frontend/src/lib/errorCatalog.ts  (full UX copy + display routing + retry policy)
+#   docs/errors.md                    (support lookup table, incl. technical context)
+#
+# Fields per code:
+#   title             short human summary (RFC 9457 `title`)
+#   status            HTTP status (0 = frontend-only, never sent by the backend)
+#   severity          info | warning | error | critical  (drives log level + toast styling)
+#   display           field | toast | banner | page      (default frontend surface)
+#   user_message      friendly, jargon-free explanation shown to the user
+#   action_step       what the user should do next
+#   technical_context developer note — never crosses the wire, lives in docs + logs
+#   retry             optional { after_ms, max } — frontend auto-retry policy
+#   alert             optional ops note: what a spike/sustained rate of this code means
+#   frontend_only     optional bool — synthesized by the frontend, no backend mapping
+#   params            optional list of names the backend may send via
+#                     `AppError(params={...})` (envelope `params`). Values are
+#                     identifiers/numbers only — never PII or free text.
+#   user_message_specific  required with params: user_message with `{name}`
+#                     placeholders. Clients show it only when EVERY param has a
+#                     value, else fall back to the plain user_message.
+#
+# GOVERNANCE: codes are permanent. Never reuse or renumber — mark dead codes
+# with `deprecated = true` instead (kept in the frontend catalog so old cached
+# bundles still render them).
+
+# ---------------------------------------------------------------- generic request
+
+[ERR_REQ_001]
+title = "Request could not be processed"
+status = 400
+severity = "warning"
+display = "toast"
+user_message = "We couldn't process that request."
+action_step = "Try again. If it keeps happening, contact support and mention the code shown below."
+technical_context = "Base AppError fallback — a slice raised AppError directly instead of a specific subclass. Treat occurrences as a prompt to define a dedicated code."
+
+[ERR_REQ_002]
+title = "Not found"
+status = 404
+severity = "info"
+display = "toast"
+user_message = "We couldn't find that page or it may have been removed."
+action_step = "Check the link, or head back to your dashboard."
+technical_context = "Generic NotFoundError or an unmatched route (Starlette 404/405 are mapped here too)."
+
+[ERR_REQ_003]
+title = "Conflict"
+status = 409
+severity = "info"
+display = "toast"
+user_message = "That change conflicts with the current state of your data."
+action_step = "Refresh to see the latest version, then try again."
+technical_context = "Generic ConflictError fallback. Prefer a specific code (ERR_VAL_006 for stale writes, ERR_ORG_*/ERR_BILL_* for domain conflicts)."
+
+[ERR_REQ_004]
+title = "Too many requests"
+status = 429
+severity = "warning"
+display = "toast"
+user_message = "You're doing that a little too fast, so we've paused things briefly."
+action_step = "Wait a moment, then try again."
+technical_context = "RateLimited raised by a rate-limiting dependency (Redis sliding window — provisioned but opt-in). Retry-After is set when known; the frontend disables the triggering control until it elapses."
+alert = "Burst from a single IP/user on /auth/login = credential stuffing attempt."
+
+[ERR_REQ_005]
+title = "Payload too large"
+status = 413
+severity = "info"
+display = "toast"
+user_message = "That file or request is too large for us to accept."
+action_step = "Try something smaller, or compress the file first."
+technical_context = "Frontend-mapped from a (often bodyless) 413 — usually rejected by the proxy before reaching FastAPI, so no problem+json body exists."
+
+# ---------------------------------------------------------------- validation
+
+[ERR_VAL_001]
+title = "Validation failed"
+status = 422
+severity = "info"
+display = "field"
+user_message = "Some of the information looks incomplete or incorrect."
+action_step = "Check the highlighted fields and try again."
+technical_context = "Pydantic schema validation failed at the router boundary. The handler flattens pydantic's loc list into the envelope's `fields` map (keys are dotted body paths, with the body/query/path prefix dropped) and rewrites pydantic's messages into plain sentences (`friendly_field_message` in app.core.error_handling). Custom validator ValueErrors pass through minus pydantic's 'Value error, ' prefix, so write them as user-facing copy."
+alert = "Concentrated on one field right after a deploy = frontend/backend schema drift."
+
+[ERR_VAL_002]
+title = "Email already registered"
+status = 409
+severity = "info"
+display = "field"
+user_message = "An account with this email already exists."
+action_step = "Try signing in instead, or use 'Forgot password' if you don't remember it."
+technical_context = "EmailAlreadyRegistered from AuthService.register (caught before the unique constraint fires). Only raised when SIGNUP_ENUMERATION_PROTECTION is off (the default): a deliberate enumeration trade-off for one-step signup, bounded by the register rate limit. With it on, register answers 202 verification_required either way, the existing owner gets a notice email, and this error never fires."
+
+[ERR_VAL_003]
+title = "Password too weak"
+status = 400
+severity = "info"
+display = "field"
+user_message = "That password is too easy to guess."
+action_step = "Use at least 12 characters with a mix of letters and numbers, avoiding common passwords."
+technical_context = "PasswordTooWeak — validate_password_strength failed (too short, missing letter/digit mix, or on the common-password blocklist). Min length is PASSWORD_MIN_LENGTH in auth/domain/services.py (mirrored in frontend password-policy)."
+
+[ERR_VAL_004]
+title = "Passwords do not match"
+status = 400
+severity = "info"
+display = "field"
+user_message = "The two passwords you entered don't match."
+action_step = "Re-type both passwords so they match exactly."
+technical_context = "PasswordMismatch from AuthService.register. Normally caught client-side first; reaching the backend implies JS-less submission or a frontend bug."
+
+[ERR_VAL_005]
+title = "Terms not accepted"
+status = 400
+severity = "info"
+display = "field"
+user_message = "You'll need to accept the Terms of Service and Privacy Policy to create an account."
+action_step = "Tick the agreement checkbox, then try again."
+technical_context = "TermsNotAccepted from AuthService.register — terms_accepted was false at the API boundary."
+
+[ERR_VAL_006]
+title = "Edit conflict"
+status = 409
+severity = "info"
+display = "toast"
+user_message = "Someone else changed this just now, so we didn't save your edits to avoid overwriting theirs."
+action_step = "Refresh to see the latest version, then re-apply your changes."
+technical_context = "StaleWriteError — optimistic concurrency failure (stale version/updated_at on write). Log both versions' timestamps and the conflicting user_id. Defined in core for slices to adopt."
+
+# ---------------------------------------------------------------- auth
+
+[ERR_AUTH_001]
+title = "Invalid credentials"
+status = 401
+severity = "info"
+display = "field"
+user_message = "That email and password combination didn't match our records."
+action_step = "Double-check both fields and try again, or use 'Forgot password' to reset it."
+technical_context = "InvalidCredentials from AuthService.login: user not found OR argon2 verify failed — logged identically for both to prevent user-enumeration timing analysis."
+
+[ERR_AUTH_002]
+title = "Session expired"
+status = 401
+severity = "info"
+display = "page"
+user_message = "Your session has ended, so we signed you out to keep your account safe."
+action_step = "Sign in again to pick up where you left off."
+technical_context = "SessionExpired on the refresh path: cookie missing, token expired (>30d), or hash mismatch after rotation (possible reuse/theft — the token family is revoked). Surfaces when the frontend's transparent tryRefresh() fails; the auth context then signs the user out."
+
+[ERR_AUTH_003]
+title = "Could not verify sign-in"
+status = 401
+severity = "warning"
+display = "toast"
+user_message = "We couldn't verify your sign-in."
+action_step = "Refresh the page. If you're still stuck, sign out and back in."
+technical_context = "Generic AuthenticationError from auth deps: missing bearer, malformed/bad-signature JWT, or inactive user — distinct from simple expiry (silently refreshed). Often clock skew or a SECRET_KEY mismatch across instances."
+alert = "Spike right after a deploy = SECRET_KEY mismatch between instances — roll back."
+
+[ERR_AUTH_004]
+title = "Link invalid or expired"
+status = 400
+severity = "info"
+display = "page"
+user_message = "This link is no longer valid — it may have expired or already been used."
+action_step = "Request a fresh link and use it soon after it arrives."
+technical_context = "InvalidActionToken: a purpose-scoped action JWT (email verification or password reset) failed decode, expired, had a purpose mismatch, or the password-reset fingerprint no longer matches (link already used, or the password changed after it was issued). TTLs: EMAIL_VERIFICATION_TTL_HOURS / PASSWORD_RESET_TTL_MINUTES."
+
+[ERR_AUTH_005]
+title = "Email not verified"
+status = 403
+severity = "info"
+display = "toast"
+user_message = "Confirm your email address before continuing."
+action_step = "Check your inbox for the verification link, or resend it from your profile."
+technical_context = "EmailNotVerified — EMAIL_VERIFICATION_GATE is sensitive/login and the session user has email_verified_at IS NULL. CurrentVerifiedUser (and LoginUser when gate=login) raise this. API-key callers are not gated. Flip the gate in Settings / env per project."
+
+[ERR_AUTH_006]
+title = "Account temporarily locked"
+status = 429
+severity = "warning"
+display = "field"
+user_message = "Too many failed sign-in attempts, so sign-in for this account is paused briefly."
+action_step = "Wait about 15 minutes and try again, or reset your password now via 'Forgot password'."
+technical_context = "AccountTemporarilyLocked from LoginUser: LOGIN_LOCKOUT_MAX_ATTEMPTS consecutive failures within LOGIN_LOCKOUT_WINDOW_MINUTES from one client IP lock that email for that IP only; LOGIN_LOCKOUT_ACCOUNT_MAX_ATTEMPTS failures across all IPs lock the email for everyone. Both are tracked whether or not the account exists (no enumeration signal); a completed password reset lifts the lock. Redis-backed; on a Redis outage it degrades to a per-process in-memory counter (never fully open). Retry-After carries the remaining lock seconds."
+alert = "A spike here = credential-stuffing campaign — query audit_events for auth.lockout_triggered grouped by ip. meta.scope=account means an email was locked for every client, its owner included (distributed guessing or a targeted lockout)."
+
+[ERR_AUTH_007]
+title = "Not available while impersonating"
+status = 403
+severity = "warning"
+display = "toast"
+user_message = "This action isn't available while you're viewing the app as another user."
+action_step = "End the impersonation session and ask the account owner to do this themselves."
+technical_context = "ImpersonationNotAllowed from forbid_impersonation (auth/interface/deps.py): the access token carries an `imp` claim (admin impersonation session) and the route creates or changes a credential that would outlive the 15-minute session (password change, API key creation). Impersonation is for looking, not for minting persistent access."
+
+# ---------------------------------------------------------------- permissions & tenancy
+
+[ERR_PERM_001]
+title = "Permission denied"
+status = 403
+severity = "info"
+display = "toast"
+user_message = "You don't have permission to do that in this organization."
+action_step = "Ask an organization admin to upgrade your role, or switch to an organization where you have access."
+technical_context = "InsufficientRole (or base PermissionDeniedError): require_role() passed the membership check but the role rank was insufficient. Log includes org_id, user_id, required vs. actual role."
+
+[ERR_PERM_002]
+title = "Not found"
+status = 404
+severity = "warning"
+display = "toast"
+user_message = "We couldn't find that page or it may have been removed."
+action_step = "Check the link, or head back to your dashboard."
+technical_context = "OrganizationNotFound — deliberate 404-masking per multi-tenancy rule #2: the user is NOT a member of the requested org, and org existence must never leak. The internal log records the real reason; the user copy is identical to a plain 404."
+alert = "Burst from one user across many org_ids = tenant-enumeration probing — security signal."
+
+[ERR_PERM_003]
+title = "Invitation invalid"
+status = 404
+severity = "info"
+display = "page"
+user_message = "This invitation is no longer valid."
+action_step = "Ask the person who invited you to send a new invitation."
+technical_context = "InvitationInvalid: token expired (>7d), already accepted, or revoked. Log which of the three — a high expired rate suggests the TTL is too short."
+
+[ERR_PERM_004]
+title = "Administrator access required"
+status = 403
+severity = "warning"
+display = "page"
+user_message = "This area is for platform administrators."
+action_step = "Head back to your dashboard. If you believe you should have access, contact an existing administrator."
+technical_context = "NotSuperuser from get_current_superuser — a signed-in non-superuser hit an /admin route. is_superuser is only granted manually in the database."
+alert = "Repeated hits from one user = someone probing the admin surface."
+
+# ---------------------------------------------------------------- organizations
+
+[ERR_ORG_001]
+title = "Last owner"
+status = 409
+severity = "info"
+display = "toast"
+user_message = "An organization needs at least one owner, and this is the only one."
+action_step = "Make someone else an owner first, then try again."
+technical_context = "LastOwnerError — attempted to demote/remove the sole owner. Raised by OrganizationService role-change/removal paths."
+
+[ERR_ORG_002]
+title = "Already a member"
+status = 409
+severity = "info"
+display = "toast"
+user_message = "That person is already a member of this organization."
+action_step = "Nothing to do — they already have access. Check the Members page."
+technical_context = "AlreadyMember — invitation or acceptance for a user who already holds a membership in the org."
+
+[ERR_ORG_003]
+title = "Member not found"
+status = 404
+severity = "info"
+display = "toast"
+user_message = "We couldn't find that member in this organization."
+action_step = "Refresh the Members page — they may have already been removed."
+technical_context = "MemberNotFound — membership id valid-shaped but no row in this org (already removed, or cross-org id). Repos filter by organization_id, so cross-tenant ids land here by design."
+
+[ERR_ORG_004]
+title = "Organization suspended"
+status = 403
+severity = "warning"
+display = "page"
+user_message = "This organization has been suspended."
+action_step = "Contact support to resolve the suspension."
+technical_context = "OrgSuspended — organizations.suspended_at is set; require_role blocks every /orgs/{org_id}/* route for all members. Set/cleared by platform admins via /admin/organizations/{id}/(un)suspend."
+
+[ERR_ORG_005]
+title = "Domain not claimable"
+status = 400
+severity = "info"
+display = "toast"
+user_message = "That domain can't be claimed for this organization."
+action_step = "Use your company's own domain — it must match your email address, and shared providers like gmail.com aren't allowed."
+technical_context = "DomainNotClaimable — normalize_claimable_domain rejected the claim: malformed domain, public mailbox provider, owner's email not on the domain, owner email unverified, or DOMAIN_CLAIM_MODE=off."
+
+[ERR_ORG_006]
+title = "Domain already claimed"
+status = 409
+severity = "info"
+display = "toast"
+user_message = "Another organization has already claimed that domain."
+action_step = "If this is your company's domain, contact support to resolve the conflict."
+technical_context = "DomainAlreadyClaimed — organizations.email_domain is unique; a different org row already holds this domain."
+
+[ERR_ORG_007]
+title = "Company workspace already exists"
+status = 409
+severity = "info"
+display = "field"
+user_message = "Your company already has a workspace."
+action_step = "Verify your email to join automatically, or ask your company's workspace owner for an invitation."
+technical_context = "DomainOrgExists — CreateOrganization blocked because an org already claims this user's email domain. The user should auto-join via email verification instead."
+
+# ---------------------------------------------------------------- admin (audience: platform staff)
+
+[ERR_ADM_001]
+title = "User not found"
+status = 404
+severity = "info"
+display = "toast"
+user_message = "No user matches that id."
+action_step = "Refresh the user list — the account may have been removed."
+technical_context = "AdminUserNotFound — admin lookup by user id missed. Staff-facing copy; plainer than tenant-facing equivalents."
+
+[ERR_ADM_002]
+title = "Organization not found"
+status = 404
+severity = "info"
+display = "toast"
+user_message = "No organization matches that id."
+action_step = "Refresh the organization list — it may have been deleted."
+technical_context = "AdminOrgNotFound — admin lookup by org id missed. Unlike ERR_PERM_002, this is NOT masked: the caller is already a superuser."
+
+[ERR_ADM_003]
+title = "Cannot deactivate yourself"
+status = 409
+severity = "info"
+display = "toast"
+user_message = "You can't deactivate your own account from here."
+action_step = "Ask another administrator to do it, so the platform is never left without an active admin."
+technical_context = "CannotDeactivateSelf — self-deactivation guard on the admin users endpoint."
+
+[ERR_ADM_004]
+title = "Error record not found"
+status = 404
+severity = "info"
+display = "toast"
+user_message = "No error record matches that reference."
+action_step = "Check the reference for typos — records also expire after 7 days."
+technical_context = "AdminErrorRecordNotFound — /admin/errors/{error_id} lookup missed in Redis (expired errctx TTL or a mistyped reference)."
+
+[ERR_ADM_005]
+title = "Cannot impersonate a superuser"
+status = 409
+severity = "warning"
+display = "toast"
+user_message = "Superuser accounts can't be impersonated."
+action_step = "Impersonation is for regular accounts only — coordinate with the other admin directly."
+technical_context = "CannotImpersonateSuperuser — impersonation guard. Also covers self-impersonation (the acting user is a superuser by definition)."
+
+[ERR_ADM_006]
+title = "Cannot impersonate a deactivated user"
+status = 409
+severity = "info"
+display = "toast"
+user_message = "That account is deactivated, so it can't be impersonated."
+action_step = "Reactivate the account first if you need to see it from the inside."
+technical_context = "CannotImpersonateInactive — impersonation guard on users with is_active = false."
+
+[ERR_ADM_007]
+title = "Invitation not found"
+status = 404
+severity = "info"
+display = "toast"
+user_message = "No pending invitation matches that id."
+action_step = "Refresh the invitations list — it may already be accepted or revoked."
+technical_context = "AdminInvitationNotFound — cross-tenant invitation lookup missed, or the invitation was already accepted."
+
+[ERR_ADM_008]
+title = "Invalid merge"
+status = 409
+severity = "warning"
+display = "toast"
+user_message = "Cannot merge these organizations."
+action_step = "The target and source organizations must be different, existing organizations."
+technical_context = "MergeInvalid — admin org-merge guard: target not found, source not found, or source == target."
+
+# ---------------------------------------------------------------- credits
+
+[ERR_CRD_001]
+title = "Not enough credits"
+status = 409
+severity = "info"
+display = "toast"
+user_message = "Your organization doesn't have enough credits for this."
+user_message_specific = "This needs {required} credits, but your organization has {available}."
+action_step = "Buy a credit pack, then try again."
+technical_context = "InsufficientCredits — the reservation would take the org balance below zero. Sends `required` (action cost) and `available` (current balance) as params."
+params = ["required", "available"]
+alert = "A wave across many orgs after a deploy = an action's credit cost was misconfigured."
+
+[ERR_CRD_002]
+title = "Action already settled"
+status = 409
+severity = "info"
+display = "toast"
+user_message = "That action was already completed or cancelled."
+action_step = "Refresh to see the current state — no credits were double-charged."
+technical_context = "ReservationNotActive — finalize/cancel attempted on a non-active credit reservation. This is the double-settlement guard working as intended."
+
+[ERR_CRD_003]
+title = "Reservation not found"
+status = 404
+severity = "info"
+display = "toast"
+user_message = "We couldn't find that pending action."
+action_step = "Refresh and try again from the start."
+technical_context = "ReservationNotFound — reservation id missing for this org (repos filter by organization_id, so cross-tenant ids land here by design)."
+
+[ERR_CRD_004]
+title = "Unknown action"
+status = 409
+severity = "warning"
+display = "toast"
+user_message = "That action isn't available."
+action_step = "Refresh the page — you may be on an older version of the app."
+technical_context = "UnknownAction — credit-cost lookup for an action key that isn't in the pricing table. Usually a stale frontend bundle or a missing pricing entry for a newly shipped action."
+
+[ERR_CRD_005]
+title = "Unknown credit pack"
+status = 409
+severity = "warning"
+display = "toast"
+user_message = "That credit pack isn't available."
+action_step = "Refresh the page and pick one of the listed packs."
+technical_context = "UnknownCreditPack — a CreditPack value missing from the CREDIT_PACKS catalog. Stale frontend bundle, or webhook metadata referencing a pack that was removed from the catalog."
+
+[ERR_CRD_006]
+title = "Member credit limit reached"
+status = 409
+severity = "info"
+display = "toast"
+user_message = "You've reached your monthly credit limit for this organization."
+action_step = "Ask an organization admin to raise your limit, or try again next month."
+technical_context = "MemberCreditLimitExceeded — the acting user's captured + pending reservations this UTC calendar month plus the requested cost exceed member_credit_limits.monthly_limit. API-key charges are exempt (they carry no user_id). The error message includes used vs. requested amounts."
+
+[ERR_CRD_007]
+title = "Not an organization member"
+status = 404
+severity = "info"
+display = "toast"
+user_message = "That person isn't a member of this organization."
+action_step = "Check the member list and try again."
+technical_context = "LimitTargetNotMember — a member-limit set referenced a user_id with no membership in the org (removed member or wrong id)."
+
+# ---------------------------------------------------------------- generations
+
+[ERR_GEN_001]
+title = "Generation not found"
+status = 404
+severity = "info"
+display = "toast"
+user_message = "We couldn't find that generation."
+action_step = "Head back to your generations list — it may have been removed."
+technical_context = "GenerationNotFound — generation id missing for this org."
+
+[ERR_GEN_002]
+title = "Generation not available"
+status = 409
+severity = "warning"
+display = "toast"
+user_message = "Content generation isn't set up on this server yet."
+action_step = "If you run this deployment, configure the provider API keys (see README). Otherwise, contact your administrator."
+technical_context = "ProviderNotConfigured — the generation provider's API key is empty. Expected in fresh dev environments; in production it's env misconfiguration."
+
+[ERR_GEN_003]
+title = "Generation failed"
+status = 409
+severity = "error"
+display = "toast"
+user_message = "We couldn't finish generating that, and your credits for it have been returned."
+action_step = "Try again. If it keeps failing, tweak your input or contact support with the code below."
+technical_context = "GenerationFailed — the provider call errored; the credit reservation is released (refund), which is what makes the 'credits returned' promise honest. Log the provider error verbatim."
+alert = "Sustained rate = provider outage or a prompt/template regression — check provider status first."
+
+[ERR_GEN_004]
+title = "Still generating"
+status = 409
+severity = "info"
+display = "toast"
+user_message = "This is still being generated."
+action_step = "Give it a few seconds — the result will appear when it's ready."
+technical_context = "ResultNotReady — result fetched before the generation finished. Normal during polling; only worth attention if a generation never leaves this state."
+
+[ERR_GEN_005]
+title = "Can't cancel this"
+status = 409
+severity = "info"
+display = "toast"
+user_message = "This can only be canceled while it's still generating."
+action_step = "It already finished — refresh to see the result."
+technical_context = "NotCancelable — cancel requested on a non-pending generation. Usually a race between the user clicking cancel and the job finishing; harmless."
+
+[ERR_GEN_006]
+title = "Can't delete this yet"
+status = 409
+severity = "info"
+display = "toast"
+user_message = "Wait until this finishes before deleting it."
+action_step = "Cancel it first, then delete it."
+technical_context = "NotDeletable — delete requested on a still-pending generation. Deleting mid-flight would orphan the credit hold and the in-progress provider job; cancel handles those."
+
+# ---------------------------------------------------------------- privacy requests (DSAR)
+
+[ERR_PRIV_001]
+title = "Privacy request not found"
+status = 404
+severity = "info"
+display = "toast"
+user_message = "We couldn't find that privacy request."
+action_step = "Refresh the queue — it may have been closed or the link is stale."
+technical_context = "PrivacyRequestNotFound — admin lookup by privacy request id missed."
+
+[ERR_PRIV_002]
+title = "Privacy request cannot be updated"
+status = 409
+severity = "info"
+display = "toast"
+user_message = "That privacy request is not in a state that allows this action."
+action_step = "Check the current status, then use the next allowed step (verify → fulfill/forward → close)."
+technical_context = "PrivacyRequestInvalidTransition — status machine guard on verify/fulfill/forward/close/reject."
+
+[ERR_PRIV_003]
+title = "Privacy request incomplete"
+status = 400
+severity = "info"
+display = "field"
+user_message = "We need a bit more information to process this privacy request."
+action_step = "Provide a contact email plus an email or phone number for the subject."
+technical_context = "PrivacyRequestIncomplete — missing required intake or ops fields (contact email, subject locator, provider ref, rejection reason)."
+
+# ---------------------------------------------------------------- llm
+
+[ERR_LLM_001]
+title = "AI text provider not configured"
+status = 409
+severity = "warning"
+display = "toast"
+user_message = "This AI text provider isn't set up on this server yet."
+action_step = "If you run this deployment, add the provider API key (see README). Otherwise, contact your administrator."
+technical_context = "LlmProviderNotConfigured — GEMINI_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY empty for the requested provider. Raised before any credits are held."
+
+[ERR_LLM_002]
+title = "Text generation failed"
+status = 409
+severity = "error"
+display = "toast"
+user_message = "The AI provider couldn't complete this request, and your credit for it has been returned."
+action_step = "Try again. If it keeps failing, switch providers or contact support with the code below."
+technical_context = "LlmCallFailed — the provider call errored or returned no text. The credit hold is released before this is raised, which is what makes the 'credit returned' promise honest. A FAILED llm_calls row records the provider error verbatim."
+alert = "Sustained rate on one provider = provider outage or quota exhaustion — check the provider status page and API quota."
+
+[ERR_LLM_003]
+title = "Text completion not found"
+status = 404
+severity = "info"
+display = "toast"
+user_message = "We couldn't find that text completion."
+action_step = "Head back to your completions list — it may have been removed."
+technical_context = "LlmCallNotFound — llm call id missing for this org, or a non-UUID id was requested on the poll endpoint."
+
+# ---------------------------------------------------------------- billing
+
+[ERR_BILL_001]
+title = "Billing not configured"
+status = 409
+severity = "warning"
+display = "toast"
+user_message = "Payments aren't set up on this server yet."
+action_step = "If you run this deployment, add your Stripe keys (see README). Otherwise, contact your administrator."
+technical_context = "BillingNotConfigured — STRIPE_SECRET_KEY is empty. Expected in fresh dev environments; in production it means env misconfiguration."
+
+[ERR_BILL_002]
+title = "Payment provider unreachable"
+status = 502
+severity = "critical"
+display = "toast"
+retry = { after_ms = 2000, max = 2 }
+user_message = "We couldn't reach our payment provider just now. You have not been charged."
+action_step = "Wait a moment and try again. Your credits and data are unaffected."
+technical_context = "StripeUnavailable — Stripe API connection error / 5xx / rate limit during checkout, portal, or customer creation. Log the stripe request id. 'You have not been charged' is the critical UX line — payment errors create disproportionate anxiety."
+alert = "More than a handful in 5 minutes = Stripe incident or egress problem — check status.stripe.com."
+
+[ERR_BILL_004]
+title = "No billing account"
+status = 409
+severity = "warning"
+display = "toast"
+user_message = "This organization doesn't have a billing account yet."
+action_step = "Buy a credit pack first — that sets up billing automatically."
+technical_context = "NoBillingAccount — Customer Portal requested before any checkout created a Stripe customer."
+
+[ERR_BILL_006]
+title = "Credit pack not purchasable"
+status = 409
+severity = "warning"
+display = "toast"
+user_message = "That credit pack can't be purchased right now."
+action_step = "Pick another pack, or contact your administrator if none work."
+technical_context = "PackNotPurchasable — a credit pack was requested whose Stripe price id is unset (STRIPE_PRICE_CREDITS_*)."
+
+[ERR_BILL_007]
+title = "Membership plan not available"
+status = 409
+severity = "warning"
+display = "toast"
+user_message = "That membership plan can't be purchased right now."
+action_step = "Try the other plan, or contact support if none work."
+technical_context = "CommunityPlanNotConfigured — a community membership checkout was requested but the plan's Stripe price id is unset (STRIPE_PRICE_COMMUNITY_*)."
+
+[ERR_BILL_008]
+title = "Organization plan not available"
+status = 409
+severity = "warning"
+display = "toast"
+user_message = "That organization plan can't be purchased right now."
+action_step = "Choose another plan or contact your administrator."
+technical_context = "PlanNotConfigured — a paid organization plan has no Stripe price id for the requested interval (STRIPE_PRICE_PLAN_*)."
+
+[ERR_BILL_009]
+title = "Subscription already active"
+status = 409
+severity = "warning"
+display = "toast"
+user_message = "This organization already has an active paid subscription."
+action_step = "Manage your existing plan through the billing portal."
+technical_context = "SubscriptionAlreadyActive — checkout requested while the organization already has a live paid subscription."
+
+# ---------------------------------------------------------------- files
+
+[ERR_FILE_001]
+title = "File not found"
+status = 404
+severity = "warning"
+display = "toast"
+user_message = "We couldn't find that file."
+action_step = "Refresh and try again, or upload the file again if it was removed."
+technical_context = "FileNotFound — the requested file does not exist or is outside the caller's ownership scope."
+
+[ERR_FILE_002]
+title = "Upload too large"
+status = 413
+severity = "warning"
+display = "toast"
+user_message = "That file is too large to upload."
+action_step = "Choose a smaller file within the size limit shown."
+technical_context = "UploadTooLarge — the declared or actual upload size exceeds the limit for its purpose."
+
+[ERR_FILE_003]
+title = "Unsupported file type"
+status = 415
+severity = "warning"
+display = "toast"
+user_message = "That file type isn't supported."
+action_step = "Choose a file in one of the supported formats shown."
+technical_context = "UnsupportedFileType — the upload content type is not allowed for its purpose."
+
+[ERR_FILE_004]
+title = "Upload not completed"
+status = 409
+severity = "warning"
+display = "toast"
+user_message = "Your file upload hasn't completed successfully."
+action_step = "Wait for the upload to finish, then try again. If it still fails, upload the file again."
+technical_context = "UploadNotCompleted — confirmation found no object, or its size or content type did not match."
+
+[ERR_FILE_005]
+title = "Storage unavailable"
+status = 503
+severity = "error"
+display = "toast"
+user_message = "We couldn't reach file storage just now."
+action_step = "Wait a moment and try again."
+technical_context = "StorageUnavailable — the configured object storage backend could not complete the operation."
+
+[ERR_FILE_006]
+title = "Upload quota exceeded"
+status = 429
+severity = "warning"
+display = "toast"
+user_message = "Too many uploaded files."
+action_step = "Set or remove your current photo, then try again."
+technical_context = "UploadQuotaExceeded — the owner has reached the confirmed file limit for this purpose."
+
+# ---------------------------------------------------------------- entitlements
+
+[ERR_ENT_001]
+title = "Plan upgrade required"
+status = 403
+severity = "warning"
+display = "toast"
+user_message = "Your organization's plan doesn't include this feature."
+action_step = "Upgrade your organization's plan from Billing to use this feature."
+technical_context = "EntitlementRequired — the resolved entitlement limit is zero, so the feature is not included."
+
+[ERR_ENT_002]
+title = "Plan limit reached"
+status = 403
+severity = "warning"
+display = "toast"
+user_message = "Your organization has reached its plan limit."
+user_message_specific = "Your organization has reached its plan limit of {limit} {resource}."
+action_step = "Upgrade your organization's plan from Billing for more capacity."
+technical_context = "EntitlementLimitReached — the current usage has reached the resolved organization entitlement limit. Sends `limit` (resolved cap) and `resource` (human label for the EntitlementKey) as params."
+params = ["limit", "resource"]
+
+[ERR_ENT_003]
+title = "Unknown entitlement"
+status = 422
+severity = "warning"
+display = "toast"
+user_message = "That entitlement isn't recognized."
+action_step = "Choose a supported entitlement and try again."
+technical_context = "UnknownEntitlementKey — an administrator requested an override for a key outside EntitlementKey."
+
+# ---------------------------------------------------------------- server & infrastructure
+
+[ERR_SRV_001]
+title = "Internal server error"
+status = 500
+severity = "critical"
+display = "toast"
+user_message = "Something went wrong on our end. Your data is safe, and we've been notified."
+action_step = "Try again in a few moments. If it keeps happening, contact support and mention the code shown below."
+technical_context = "Catch-all for unhandled exceptions. The handler logs the full traceback against the error_id and returns ONLY this envelope — never exception text. 'Your data is safe' is honest because get_db rolls back the transaction on failure."
+alert = "Any sustained rate is an incident. Fingerprint by error_id lookup, not by user reports."
+
+[ERR_SRV_002]
+title = "Request timed out"
+status = 504
+severity = "error"
+display = "toast"
+retry = { after_ms = 2000, max = 2 }
+user_message = "This is taking longer than expected."
+action_step = "Wait a moment and try again — your previous attempt may still finish on its own."
+technical_context = "Upstream/gateway timeout (frontend-mapped from bodyless 502/504). Retrying a mutation is safe ONLY because the api client attaches an Idempotency-Key and reuses it on retry."
+
+[ERR_SRV_003]
+title = "Maintenance in progress"
+status = 503
+severity = "warning"
+display = "page"
+user_message = "We're doing some quick maintenance and will be right back."
+action_step = "Nothing to fix on your end — this page will refresh itself when we're done."
+technical_context = "Deliberate maintenance mode or healthcheck-failed state at the proxy (frontend-mapped from a bodyless 503). The frontend shows a full-page takeover and polls /api/health with backoff, reloading when it recovers."
+
+[ERR_SRV_004]
+title = "Duplicate request in progress"
+status = 409
+severity = "info"
+display = "toast"
+user_message = "We're still working on your previous attempt at this."
+action_step = "Give it a few seconds — the first attempt should finish on its own."
+technical_context = "Idempotency middleware: a second request arrived with the same Idempotency-Key while the first was still in flight. Usually a double-click or an aggressive client retry."
+
+# ---------------------------------------------------------------- api keys
+
+[ERR_KEY_001]
+title = "API key not found"
+status = 404
+severity = "info"
+display = "toast"
+user_message = "We couldn't find that API key."
+action_step = "Head back to the API Keys page — it may have been revoked."
+technical_context = "ApiKeyNotFound — API key id missing for this org (repos filter by organization_id, so cross-tenant ids land here by design)."
+
+# ---------------------------------------------------------------- blog
+
+[ERR_BLOG_001]
+title = "Blog post not found"
+status = 404
+severity = "info"
+display = "toast"
+user_message = "We couldn't find that blog post."
+action_step = "Head back to the blog — it may have been unpublished or removed."
+technical_context = "BlogPostNotFound — public slug lookup missed or the post isn't published (drafts/archived 404 by design), or an admin id lookup missed."
+
+[ERR_BLOG_002]
+title = "Slug already in use"
+status = 409
+severity = "info"
+display = "field"
+user_message = "Another post already uses this slug."
+action_step = "Choose a different slug — each post needs a unique URL."
+technical_context = "BlogSlugConflict — unique-slug pre-check (or the DB unique index backstop on a race) rejected a create/update. The editor binds this to the slug field."
+
+[ERR_BLOG_003]
+title = "Generation job not found"
+status = 404
+severity = "info"
+display = "toast"
+user_message = "We couldn't find that draft-generation job."
+action_step = "Head back to the blog admin — the job may have been cleaned up."
+technical_context = "BlogGenerationJobNotFound — admin polled a generation job id that doesn't exist (or a stale bookmark). Jobs are superuser-only."
+
+# ---------------------------------------------------------------- feature flags
+
+[ERR_FLAG_001]
+title = "Unknown feature flag"
+status = 404
+severity = "info"
+display = "toast"
+user_message = "That feature flag doesn't exist."
+action_step = "Refresh the flags page — the list of known flags may have changed."
+technical_context = "UnknownFeatureFlag — a superuser tried to set a key that isn't in KNOWN_FLAGS (feature_flags/domain/entities.py). New flags must be registered there first."
+
+[ERR_FLAG_002]
+title = "Feature not available"
+status = 404
+severity = "info"
+display = "toast"
+user_message = "This feature isn't available right now."
+action_step = "If you followed a link here, the feature may have been turned off — head back to your dashboard."
+technical_context = "FeatureDisabled — a require_feature() gate rejected the request because the flag is off. 404 by design so a disabled module is indistinguishable from a nonexistent route."
+
+# ---------------------------------------------------------------- community
+
+[ERR_COMM_001]
+title = "Profile not found"
+status = 404
+severity = "info"
+display = "toast"
+user_message = "We couldn't find that community member."
+action_step = "Head back to the member directory — they may have left or changed their handle."
+technical_context = "ProfileNotFound — handle/user lookup missed, or the profile is hidden (hidden profiles 404 publicly by design)."
+
+[ERR_COMM_002]
+title = "Handle already taken"
+status = 409
+severity = "info"
+display = "field"
+user_message = "Someone already uses this handle."
+action_step = "Pick a different handle — each member needs a unique one."
+technical_context = "HandleTaken — unique-handle pre-check (or the DB unique index backstop on a race) rejected a join/update. Forms bind this to the handle field."
+
+[ERR_COMM_003]
+title = "Not a community member"
+status = 403
+severity = "info"
+display = "toast"
+user_message = "You need to join the community first."
+action_step = "Create your community profile, then try again."
+technical_context = "NotACommunityMember — an authenticated user without a community profile/membership hit a members-only route."
+
+[ERR_COMM_004]
+title = "Premium membership required"
+status = 403
+severity = "info"
+display = "toast"
+user_message = "Messaging is part of the premium membership."
+action_step = "Upgrade your community membership to send messages."
+technical_context = "PremiumRequired — a free member (or lapsed premium past the grace window) tried a premium action. The frontend intercepts this code in community mutations and opens the upgrade prompt instead of a toast."
+
+[ERR_COMM_005]
+title = "Community access suspended"
+status = 403
+severity = "warning"
+display = "toast"
+user_message = "Your community access has been suspended."
+action_step = "Contact support if you believe this is a mistake."
+technical_context = "CommunityBanned — a moderator banned this membership (banned_at set). All community actions are rejected; the profile is excluded from the directory."
+
+[ERR_COMM_006]
+title = "Conversation not found"
+status = 404
+severity = "info"
+display = "toast"
+user_message = "We couldn't find that conversation."
+action_step = "Head back to your messages — the conversation may have been removed."
+technical_context = "ConversationNotFound — conversation id missing or the requester isn't a participant (non-participants 404 by design, no existence leak)."
+
+[ERR_COMM_007]
+title = "Can't message yourself"
+status = 400
+severity = "info"
+display = "toast"
+user_message = "You can't start a conversation with yourself."
+action_step = "Pick another member from the directory."
+technical_context = "CannotMessageSelf — StartConversation called with the requester's own handle."
+
+[ERR_COMM_009]
+title = "Already a premium member"
+status = 409
+severity = "info"
+display = "toast"
+user_message = "You already have an active premium membership."
+action_step = "Manage or cancel it from your membership settings."
+technical_context = "AlreadyPremium — CreateCommunityCheckout called while the membership is already premium (active or in the past_due grace window). The portal is the right surface for changes."
+
+[ERR_COMM_008]
+title = "Member unavailable"
+status = 404
+severity = "info"
+display = "toast"
+user_message = "That member can't receive messages right now."
+action_step = "They may have left the community — try another member."
+technical_context = "RecipientUnavailable — messaging target doesn't exist, is hidden, or is banned. Deliberately one 404 so moderation state never leaks."
+
+# ---------------------------------------------------------------- network (frontend-only)
+
+[ERR_NET_001]
+title = "You're offline"
+status = 0
+severity = "info"
+display = "banner"
+frontend_only = true
+retry = { after_ms = 1500, max = 2 }
+user_message = "We can't reach the internet right now."
+action_step = "Check your connection — we'll retry automatically, and anything you typed is still here."
+technical_context = "FRONTEND-ONLY: fetch() rejected (TypeError) — no response received, so no backend envelope exists. Synthesized by the api client. In dev, CORS failures also surface as TypeError — check the browser console."

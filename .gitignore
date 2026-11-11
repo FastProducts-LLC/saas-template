@@ -1,0 +1,47 @@
+# Environment (examples are committed; actual secret files are not)
+.env
+.env.prod
+.env.*-deploy
+!.env.*-deploy.example
+!.env.prod.example
+env/*.env
+!env/*.env.example
+
+# Local credentials reference (never commit)
+LOCAL_DEV_CREDS.md
+# Per-checkout dev secrets: random SECRET_KEY + seed password (app/core/dev_secrets.py)
+backend/.dev-secrets/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Playwright E2E artifacts + per-run account state
+frontend/test-results/
+frontend/playwright-report/
+frontend/e2e/.state/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Generated media assets (dev)
+backend/media/
+
+# Local data dumps — never commit
+backend/data/
+
+# Local AI-agent / browser-automation state
+.claude/
+.gstack/
+.playwright-mcp/

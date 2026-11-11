@@ -1,0 +1,105 @@
+# Cross-stack policy constants — the single source of truth.
+#
+# Backend and frontend constants are GENERATED from this file:
+#     python3 scripts/gen_policy.py           # regenerate
+#     python3 scripts/gen_policy.py --check   # CI drift gate
+#
+# Outputs:
+#     backend/app/core/policy.py
+#     frontend/src/shared/lib/policy.ts
+#
+# Never hardcode these values in code or UI copy — import the generated
+# constant so backend enforcement, frontend feedback, and displayed prose
+# can't drift apart.
+
+[password]
+# Minimum password length: enforced by the backend policy
+# (auth/domain/services.py) and mirrored in the registration form's
+# live feedback.
+min_length = 12
+
+[api_keys]
+# Prefix on every issued API key. Also appears in user-facing copy
+# (curl examples, marketing feature cards).
+prefix = "sk_live_"
+
+[errors]
+# How long full request context for an error reference is kept in Redis,
+# resolvable via GET /api/admin/errors/{error_id}. Shown in admin UI copy.
+context_retention_days = 7
+
+[pagination]
+# Default page size for admin list endpoints (backend Query defaults).
+admin_page_size = 25
+# Page size the frontend requests for the credit-ledger history views.
+credit_history_page_size = 25
+# Default page size for the public blog list (backend Query default + frontend pager).
+blog_page_size = 10
+# Page size for the community member directory grid.
+community_directory_page_size = 24
+# Page size for a community conversation's message history (keyset pages).
+community_messages_page_size = 50
+
+[field_limits]
+# Max lengths enforced by backend Pydantic schemas and mirrored as
+# input maxLength attributes so users get client-side caps, not 422s.
+org_name = 120
+org_intended_use = 500
+api_key_name = 120
+admin_credit_note = 255
+privacy_request_notes = 2000
+blog_title = 200
+blog_slug = 80
+blog_excerpt = 500
+blog_meta_title = 70
+blog_meta_description = 160
+blog_cover_image_url = 500
+blog_tag = 40
+community_handle = 30
+community_display_name = 80
+community_bio = 1000
+community_avatar_url = 500
+community_message = 5000
+
+[community]
+# Days past current_period_end a past_due subscription keeps premium access
+# (Stripe retries payment during this window). Computed, never stored.
+premium_grace_days = 3
+
+[analytics]
+# Days a row stays in activity_events (first-party product analytics) before
+# the daily purge removes it. The privacy policy quotes this number — change
+# both together (frontend/src/features/legal/PRIVACY_POLICY.md).
+activity_event_retention_days = 730
+
+[blog]
+# Max tags per blog post (enforced in schemas + normalize_tags).
+max_tags = 5
+
+[rate_limits]
+# Request limits per client IP, enforced by the backend.
+# Format: <count>/<second|minute|hour|day>, with a positive count.
+auth_register = "10/hour"
+auth_login = "5/minute"
+auth_refresh = "30/minute"
+auth_forgot_password = "5/hour"
+auth_reset_password = "10/hour"
+auth_verify_email = "30/hour"
+auth_resend_verification = "5/hour"
+auth_change_password = "5/hour"
+community_start_conversation = "30/minute"
+community_send_message = "30/minute"
+generations_create = "20/minute"
+llm_complete = "60/minute"
+privacy_request_submit = "5/minute"
+files_upload = "30/hour"
+
+[uploads]
+avatar_max_bytes = 2097152          # 2 MiB
+avatar_max_files = 5                # maximum confirmed avatar files per user
+presign_ttl_seconds = 300           # lifetime of presigned upload/download URLs
+pending_ttl_hours = 24              # unconfirmed uploads older than this are deleted
+
+[billing]
+plan_grace_days = 3                 # days past current_period_end a past_due plan keeps paid access
+trial_days = 0                      # 0 = no trial on plan checkout

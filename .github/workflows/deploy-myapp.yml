@@ -1,0 +1,345 @@
+# .github/workflows/deploy-myapp.yml
+# Per-app workflow. --no-deps means it never recreates Caddy or sibling apps.
+#
+# OPT-IN: every job is skipped unless the repository variable DEPLOY_ENABLED is
+# 'true' (Settings → Secrets and variables → Actions → Variables). Set it after
+# the DROPLET_HOST / DROPLET_USER / DROPLET_SSH_KEY secrets exist. PR tests live
+# in ci.yml and always run.
+#
+# Sturdiness contract:
+#   - Builds cancel each other (newest push wins); deploys NEVER cancel mid-rollout.
+#   - :stable is tagged only AFTER a deploy passes the public health gate, so it
+#     always points at the last verified image (compose falls back to it).
+#   - The droplet keeps .myapp/last-good-sha; any rollout or health-gate failure
+#     auto-rolls-back to it.
+#   - Migrations run before the rollout, so they must be backward-compatible with
+#     the previous image (expand-contract) — a rollback does not undo them.
+name: Deploy myapp
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'docker-compose.myapp.yml'
+      - 'caddy.d/myapp.caddy'
+      - 'scripts/rollout.sh'
+      - '.github/workflows/deploy-myapp.yml'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/your-org/myapp
+
+jobs:
+  # Tests gate the deploy: broken code never reaches the droplet. Both jobs
+  # run in parallel with the image builds; `deploy` needs all of them.
+  test-backend:
+    # Opt-in: set the repo variable DEPLOY_ENABLED=true once DROPLET_* secrets exist.
+    if: vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: test-myapp-backend
+      cancel-in-progress: true
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: app
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U app"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      valkey:
+        image: valkey/valkey:9-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # conftest.py creates an isolated app_test DB on this server.
+      DATABASE_URL: postgresql+asyncpg://app:app@localhost:5432/app
+      REDIS_URL: redis://localhost:6379/0
+      # Celery defaults point at the local dev port (21430); without these,
+      # enqueueing (e.g. welcome emails) retries forever and hangs the suite.
+      CELERY_BROKER_URL: redis://localhost:6379/1
+      CELERY_RESULT_BACKEND: redis://localhost:6379/2
+      SECRET_KEY: ci-only-test-secret-key-not-production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - name: Generated artifacts up to date (errors, policy, enums, brand)
+        run: |
+          python3 scripts/gen_errors.py --check
+          python3 scripts/gen_policy.py --check
+          python3 scripts/gen_enums.py --check
+          python3 scripts/gen_events.py --check
+          python3 scripts/gen_brand.py --check
+          python3 scripts/check_env_examples.py
+      - name: Install deps
+        working-directory: backend
+        run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Pytest
+        working-directory: backend
+        run: pytest
+
+  test-frontend:
+    # Opt-in: set the repo variable DEPLOY_ENABLED=true once DROPLET_* secrets exist.
+    if: vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: test-myapp-frontend
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install deps
+        working-directory: frontend
+        run: npm ci
+      - name: Typecheck
+        working-directory: frontend
+        run: npx tsc -b
+      - name: Vitest
+        working-directory: frontend
+        run: npx vitest run
+
+  build-and-push:
+    # Opt-in: set the repo variable DEPLOY_ENABLED=true once DROPLET_* secrets exist.
+    if: vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: build-myapp-${{ matrix.target }}
+      cancel-in-progress: true
+    strategy:
+      matrix:
+        target: [backend, frontend]
+        include:
+          - target: backend
+            context: ./backend
+            dockerfile: ./backend/Dockerfile
+          - target: frontend
+            context: ./frontend
+            dockerfile: ./frontend/Dockerfile.prod
+            # Vite inlines VITE_* at build time — thread them in as build args
+            # from repo variables (empty ⇒ that integration stays disabled).
+            build_args: |
+              VITE_SENTRY_DSN=${{ vars.VITE_SENTRY_DSN }}
+              VITE_GA_MEASUREMENT_ID=${{ vars.VITE_GA_MEASUREMENT_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # :stable is deliberately NOT pushed here — see promote-stable below.
+      - name: Build & push ${{ matrix.target }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          build-args: ${{ matrix.build_args }}
+          push: true
+          tags: ${{ env.IMAGE_PREFIX }}/${{ matrix.target }}:${{ github.sha }}
+          cache-from: type=registry,ref=${{ env.IMAGE_PREFIX }}/${{ matrix.target }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE_PREFIX }}/${{ matrix.target }}:buildcache,mode=max
+
+  deploy:
+    needs: [build-and-push, test-backend, test-frontend]
+    if: vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write # read for pull; write to promote :stable after the gates
+    # Deploys queue instead of cancelling — never kill a rollout halfway.
+    concurrency:
+      group: deploy-myapp-droplet
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Copy compose overlay to droplet
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          source: docker-compose.myapp.yml
+          target: /opt/prd-shared
+          overwrite: true
+
+      - name: Copy Caddy vhost
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          source: caddy.d/myapp.caddy
+          target: /opt/prd-shared/caddy.d
+          strip_components: 1
+          overwrite: true
+
+      - name: Copy rollout script
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          source: scripts/rollout.sh
+          target: /opt/prd-shared/.myapp
+          strip_components: 1
+          overwrite: true
+
+      # docker compose ignores deploy.update_config.order (Swarm-only key): a
+      # plain `up -d` on an image change is stop-first and takes the API down
+      # for the container's full warmup (~35s measured). scripts/rollout.sh
+      # does a scale-based rolling replace instead — verified zero failed
+      # requests under continuous load. Beat stays a plain recreate: it's a
+      # singleton and a brief gap is by design.
+      - name: Deploy (vhost gate → pull → migrate → rolling replace → health gate, auto-rollback)
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        env:
+          SHA: ${{ github.sha }}
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          envs: SHA
+          script: |
+            set -euo pipefail
+            cd /opt/prd-shared
+
+            mkdir -p .myapp
+            PREV_SHA=""
+            [ -f .myapp/last-good-sha ] && PREV_SHA=$(cat .myapp/last-good-sha)
+
+            # --- Caddy vhost gate ---------------------------------------------
+            # The new vhost was already SCP'd over the live one. Validate before
+            # reloading; if it breaks the config, restore the last-good copy so a
+            # Caddy restart can never take down the whole droplet.
+            if ! docker exec prd-shared-caddy-1 caddy validate --config /etc/caddy/Caddyfile; then
+              echo "::error::New Caddy vhost failed validation — restoring last-good vhost"
+              if [ -f .myapp/myapp.caddy.lastgood ]; then
+                cp .myapp/myapp.caddy.lastgood caddy.d/myapp.caddy
+                docker exec prd-shared-caddy-1 caddy validate --config /etc/caddy/Caddyfile
+              fi
+              exit 1
+            fi
+            cp caddy.d/myapp.caddy .myapp/myapp.caddy.lastgood
+            # Reload BEFORE rolling containers so routing config is live during
+            # the start-first transition.
+            docker exec prd-shared-caddy-1 caddy reload --config /etc/caddy/Caddyfile
+
+            # --- Pull → migrate (serialized: migrate needs the new image) ------
+            echo "APP_SHA=${SHA}" > .env.myapp-deploy
+            chmod 600 .env.myapp-deploy
+
+            COMPOSE="docker compose \
+              -f docker-compose.myapp.yml \
+              --env-file .env.myapp-deploy"
+
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            $COMPOSE pull myapp-backend myapp-frontend
+
+            $COMPOSE run --rm --no-deps myapp-backend alembic upgrade head
+
+            # --- Rolling replace with auto-rollback -----------------------------
+            ROLLOUT=/opt/prd-shared/.myapp/rollout.sh
+            chmod +x "$ROLLOUT"
+
+            # Zero-downtime rollback: rollout.sh reads .env.myapp-deploy fresh
+            # on each call, so rewriting it and re-rolling replaces the bad
+            # containers the same graceful way they went in.
+            rollback() {
+              if [ -n "$PREV_SHA" ] && [ "$PREV_SHA" != "$SHA" ]; then
+                echo "::warning::Rolling back to last-good ${PREV_SHA}"
+                echo "APP_SHA=${PREV_SHA}" > .env.myapp-deploy
+                bash "$ROLLOUT" myapp-backend 30 || true
+                bash "$ROLLOUT" myapp-frontend 30 || true
+                bash "$ROLLOUT" myapp-worker 120 || true
+                bash "$ROLLOUT" myapp-worker-heavy 600 || true
+                $COMPOSE up -d --wait --wait-timeout 120 --no-deps myapp-beat || true
+                $COMPOSE ps
+              else
+                echo "::warning::No last-good SHA to roll back to"
+              fi
+            }
+
+            # A failed rollout leaves the OLD replica serving untouched, so a
+            # backend/frontend/worker failure needs no rollback — just abort.
+            # Order: backend first (old frontend must never point at a missing
+            # new API; new backend must tolerate old frontend).
+            bash "$ROLLOUT" myapp-backend 30
+            bash "$ROLLOUT" myapp-frontend 30
+            bash "$ROLLOUT" myapp-worker 120
+            bash "$ROLLOUT" myapp-worker-heavy 600
+
+            # Beat is a singleton — plain stop-first recreate, gated on health.
+            beat_exit=0
+            $COMPOSE up -d --wait --wait-timeout 120 --no-deps myapp-beat || beat_exit=$?
+            if [ "$beat_exit" -ne 0 ]; then
+              echo "::error::Beat failed its healthcheck (exit $beat_exit)"
+              $COMPOSE logs --tail 30 --no-color myapp-beat
+              rollback
+              exit 1
+            fi
+
+            # --- Public URL gate (full path through Caddy) ---------------------
+            ok=0
+            for i in $(seq 1 10); do
+              if curl -fsS --max-time 5 https://your-domain.com/api/health >/dev/null 2>&1; then
+                echo "Public URL OK"; ok=1; break
+              fi
+              sleep 3
+            done
+            if [ "$ok" != "1" ]; then
+              echo "::error::Public URL gate failed: https://your-domain.com/api/health"
+              rollback
+              exit 1
+            fi
+
+            echo "${SHA}" > .myapp/last-good-sha
+            docker image prune -f
+
+      # Only after the deploy passed every gate does :stable move — it is the
+      # rollback fallback (compose default ${APP_SHA:-stable}), so it must
+      # never point at an unverified image. Runs here (not a separate job) to
+      # save a runner spin-up; step order guarantees the gates already passed.
+      - name: Log in to GHCR (runner)
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Promote ${{ github.sha }} to :stable
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.IMAGE_PREFIX }}/backend:stable \
+            ${{ env.IMAGE_PREFIX }}/backend:${{ github.sha }}
+          docker buildx imagetools create \
+            -t ${{ env.IMAGE_PREFIX }}/frontend:stable \
+            ${{ env.IMAGE_PREFIX }}/frontend:${{ github.sha }}

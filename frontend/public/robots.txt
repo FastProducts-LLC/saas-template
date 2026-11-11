@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /dashboard
+
+# Make this absolute for production (https://yourdomain.com/api/blog/sitemap.xml) —
+# scripts/rebrand.py rewrites the domain.
+Sitemap: /api/blog/sitemap.xml

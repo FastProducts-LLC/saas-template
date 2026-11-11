@@ -1,0 +1,29 @@
+# Prune stale buildcache versions from GHCR to prevent unbounded storage growth.
+# mode=max registry caching creates new untagged versions on every push;
+# this job keeps the newest 5 and deletes the rest, weekly.
+name: Cleanup buildcache
+
+on:
+  schedule:
+    - cron: '15 4 * * 0'   # Sunday 04:15 UTC
+  workflow_dispatch:
+
+jobs:
+  prune:
+    # Opt-in: set the repo variable DEPLOY_ENABLED=true once DROPLET_* secrets exist.
+    if: vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      packages: write
+    strategy:
+      matrix:
+        package: [backend, frontend]
+    steps:
+      - name: Delete old untagged versions of ${{ matrix.package }}
+        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5
+        with:
+          package-name: myapp/${{ matrix.package }}
+          package-type: container
+          min-versions-to-keep: 5
+          delete-only-untagged-versions: true

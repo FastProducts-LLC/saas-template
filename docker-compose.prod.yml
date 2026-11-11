@@ -1,0 +1,50 @@
+# /opt/prd-shared/docker-compose.prod.yml
+# ⚠️  SHARED platform stack — one per droplet, owned by the platform, NOT
+# renamed per app. It runs only Caddy (the sole 80/443 entrypoint) and
+# expects the external network created once by setup-platform.sh.
+#
+# Apps are SEPARATE compose projects (docker-compose.<app>.yml, e.g.
+# docker-compose.myapp.yml with `name: <app>`) that join the external
+# `prd-shared-backend` network; they NEVER redefine caddy, and this file
+# never lists app services.
+#
+# Bring up / update Caddy:
+#   docker compose -f docker-compose.prod.yml up -d caddy
+# ⚠️  NEVER `docker compose -f docker-compose.prod.yml down` — it stops Caddy
+# (and TLS) for every app on the droplet.
+
+name: prd-shared
+
+networks:
+  shared:
+    name: prd-shared-backend
+    external: true
+
+services:
+  caddy:
+    image: caddy:2.11.9-alpine
+    container_name: prd-shared-caddy-1
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy.d:/etc/caddy/sites:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - shared
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 256M }
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  caddy_data:
+  caddy_config:

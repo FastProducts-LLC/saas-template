@@ -1,0 +1,4 @@
+# CI / local test+lint extras — the prod image installs requirements.txt only.
+pytest==9.2.0
+pytest-asyncio==1.4.1.post1
+ruff==0.17.4

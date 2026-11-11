@@ -1,0 +1,86 @@
+# Product identity and visual tokens — the single source of truth (docs/customization.md §1).
+#
+# Brand constants are GENERATED from this file:
+#     python3 scripts/gen_brand.py            # regenerate
+#     python3 scripts/gen_brand.py --check    # CI drift gate
+#
+# Outputs:
+#     frontend/src/shared/lib/brand.ts
+#     mobile/src/shared/lib/brand.ts
+#     frontend/src/shared/styles/tokens.css
+#     mobile/src/shared/ui/tokens.ts
+#     backend/app/core/brand.py
+#     frontend/index.html (the block between the gen:brand markers)
+#     mobile/app.json (expo.name and splash-screen backgroundColor)
+
+# Product identity shared by the web, mobile, and backend surfaces.
+[brand]
+name = "SaaS Template"
+legal_name = "SaaS Template, Inc."
+# Short positioning line — browser tab title renders as "<name> — <tagline>".
+tagline = "Multi-tenant SaaS starter"
+# Meta/OG description (one sentence, ~160 chars).
+description = "A multi-tenant SaaS starter with organizations, Stripe billing, a credit engine, metered AI endpoints, API keys, and an admin console."
+support_email = "support@your-domain.com"
+
+# Deployment identifiers consumed by scripts/rebrand.py and generated URLs.
+[deploy]
+slug = "myapp"
+domain = "your-domain.com"
+ghcr_org = "your-org"
+port_base = 21427
+
+# Company details and policy defaults consumed by the legal documents.
+[legal]
+company_name = "[COMPANY LEGAL NAME]"
+effective_date = "November 9, 2026"
+jurisdiction_state = "Delaware"
+jurisdiction_country = "United States"
+arbitration_venue = "Wilmington, Delaware"
+minimum_age = 18
+
+# Shared palette — semantic colors remain independent when retheming.
+# "Carbon & Lime" (DESIGN.md). The legacy key names are kept so every surface
+# (web, mobile, email) rethemes from values alone: ink/ink_soft = carbon,
+# paper = app page tint, mist = sand insets, line = hairlines, slate =
+# secondary text. The teal_* keys are the *signal* role, now carbon: links,
+# focus, active state. Lime is never a text color, so it is not a signal.
+[theme.colors]
+ink = "#0c0c0b"
+ink_soft = "#1c1c1b"
+slate = "#6b6a67"
+mist = "#f4f2f0"
+paper = "#faf9f7"
+line = "#e5e2dd"
+teal = "#1c1c1b"
+teal_deep = "#0c0c0b"
+teal_glow = "#e4f222"
+success = "#1f7a3d"
+danger = "#b45309"
+info = "#0369a1"
+# Marketing surface (home page, marketing header/footer) — DESIGN.md "Marketing surface".
+canvas = "#ffffff"
+sand = "#f4f2f0"
+sand_line = "#e5e2dd"
+carbon = "#0c0c0b"
+carbon_soft = "#1c1c1b"
+lime = "#e4f222"
+lime_deep = "#d3e11c"
+
+# Font families for generated CSS; font assets are loaded by the frontend.
+[theme.fonts]
+display = "Inter Variable"
+body = "Inter Variable"
+mono = "IBM Plex Mono"
+# Marketing-surface grotesk (headlines, body, and buttons on the public site).
+marketing = "Inter Variable"
+
+# Neutrals for inline-styled email HTML (CSS variables cannot reach clients).
+[theme.email]
+background = "#f5f5f5"
+surface = "#ffffff"
+text = "#374151"
+muted = "#6b7280"
+faint = "#9ca3af"
+rule = "#eeeeee"
+on_accent = "#ffffff"

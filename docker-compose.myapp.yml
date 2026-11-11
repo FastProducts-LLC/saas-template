@@ -1,0 +1,127 @@
+# /opt/prd-shared/docker-compose.myapp.yml
+# Standalone compose project for myapp on the prd-shared-host droplet.
+# Caddy (in the base stack) reaches these services via prd-shared-backend.
+#
+# Deploy: scripts/rollout.sh <service> — NOT plain `up -d`. Compose ignores
+# deploy.update_config.order (Swarm-only), so `up -d` on an image change is a
+# stop-first recreate that takes the service down for its full warmup. The
+# rollout script does a scale-up → health-gate → drain-old rolling replace.
+# Healthchecks below are load-bearing: they gate the rollout cutover.
+
+name: myapp
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-myapp-common: &myapp-common
+  image: ghcr.io/your-org/myapp/backend:${APP_SHA:-stable}
+  env_file: env/myapp.env
+  restart: unless-stopped
+  logging: *default-logging
+  environment:
+    ENVIRONMENT: production
+
+services:
+  myapp-backend:
+    <<: *myapp-common
+    volumes:
+      - myapp_media:/app/media
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    deploy:
+      resources:
+        # Size for your app; the droplet is shared with other stacks.
+        limits: { cpus: "1", memory: 1G }
+    networks:
+      - shared
+
+  myapp-frontend:
+    image: ghcr.io/your-org/myapp/frontend:${APP_SHA:-stable}
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: http://myapp-backend:8000
+    logging: *default-logging
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/"]
+      interval: 15s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 128M }
+    networks:
+      - shared
+
+  # Split worker pools: default (short/latency-sensitive: emails, sweeps)
+  # must never sit behind heavy jobs (generations run up to 30 min each) —
+  # with a single -Q default,heavy pool at --concurrency 2, two generations
+  # starved every email and beat sweep for their full runtime.
+  myapp-worker:
+    <<: *myapp-common
+    command: celery -A app.core.celery_app worker -Q default --loglevel info --concurrency 2 --pidfile /tmp/celery-worker.pid
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os; os.kill(int(open('/tmp/celery-worker.pid').read().strip()), 0)\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 512M }
+    networks:
+      - shared
+
+  myapp-worker-heavy:
+    <<: *myapp-common
+    command: celery -A app.core.celery_app worker -Q heavy --loglevel info --concurrency 2 --pidfile /tmp/celery-worker.pid
+    volumes:
+      - myapp_media:/app/media
+    stop_grace_period: 600s
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os; os.kill(int(open('/tmp/celery-worker.pid').read().strip()), 0)\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    deploy:
+      resources:
+        limits: { cpus: "2", memory: 2G }
+    networks:
+      - shared
+
+  myapp-beat:
+    <<: *myapp-common
+    command: celery -A app.core.celery_app beat --loglevel info -s /tmp/celerybeat-schedule --pidfile /tmp/celery-beat.pid
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os; os.kill(int(open('/tmp/celery-beat.pid').read().strip()), 0)\""]
+      interval: 15s
+      timeout: 5s
+      # 120s: beat in "(recovery)" mode replays its schedule before writing the
+      # pidfile — 60s killed a deploy on 2026-07-09.
+      start_period: 120s
+      retries: 3
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 256M }
+    networks:
+      - shared
+
+volumes:
+  myapp_media:
+
+networks:
+  shared:
+    name: prd-shared-backend
+    external: true
