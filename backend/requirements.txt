@@ -6,11 +6,11 @@ alembic==1.20.1
     # via backend (pyproject.toml)
 amqp==5.4.2
     # via kombu
-annotated-doc==0.0.5
+annotated-doc==0.0.6
     # via fastapi
 annotated-types==0.8.0
     # via pydantic
-anthropic==2.7.0
+anthropic==2.8.0
     # via backend (pyproject.toml)
 anyio==4.16.0
     # via
@@ -23,13 +23,13 @@ anyio==4.16.0
     #   watchfiles
 argon2-cffi==25.1.0
     # via backend (pyproject.toml)
-argon2-cffi-bindings==26.1.0
+argon2-cffi-bindings==26.2.0
     # via argon2-cffi
 asyncpg==0.32.0
     # via backend (pyproject.toml)
 billiard==4.3.2
     # via celery
-boto3==1.43.127
+boto3==1.44.2
     # via backend (pyproject.toml)
 celery==5.7.0
     # via backend (pyproject.toml)
@@ -70,13 +70,13 @@ docstring-parser==0.18.0
     # via anthropic
 email-validator==2.3.0
     # via pydantic
-fastapi==0.162.2
+fastapi==0.162.5
     # via
     #   backend (pyproject.toml)
     #   sentry-sdk
-google-auth==2.62.1
+google-auth==2.62.2
     # via google-genai
-google-genai==3.0.0
+google-genai==3.3.0
     # via backend (pyproject.toml)
 greenlet==3.5.6
     # via sqlalchemy
@@ -117,7 +117,7 @@ mako==1.4.3
     # via alembic
 markupsafe==3.0.4
     # via mako
-openai==3.48.0
+openai==3.50.0
     # via backend (pyproject.toml)
 opentelemetry-api==1.45.2
     # via
@@ -167,9 +167,9 @@ requests==2.34.2
     #   google-genai
     #   resend
     #   stripe
-resend==2.53.1
+resend==2.53.2
     # via backend (pyproject.toml)
-sentry-sdk==2.74.0
+sentry-sdk==2.75.0
     # via backend (pyproject.toml)
 six==1.17.0
     # via python-dateutil
@@ -188,7 +188,7 @@ starlette==1.10.0
     # via fastapi
 stripe==16.1.0
     # via backend (pyproject.toml)
-tenacity==9.1.4
+tenacity==9.2.1
     # via google-genai
 truststore==0.10.5
     # via

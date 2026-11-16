@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "SaaS Template backend — FastAPI, DDD vertical slices, multi-tenant, Stripe billing"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.162",
+    "fastapi>=0.162.5",
     "uvicorn[standard]>=0.54",
     "sqlalchemy[asyncio]>=2.1",
     "asyncpg>=0.32",
@@ -14,22 +14,22 @@ dependencies = [
     "argon2-cffi>=25.1",
     "pyjwt>=2.15",
     "stripe>=16.0",
-    "boto3>=1.43",
+    "boto3>=1.44.2",
     "aiosmtplib>=5.1",
-    "resend[async]>=2.53",
+    "resend[async]>=2.53.2",
     "redis>=8.0",
     "celery[redis]>=5.7",
     "slowapi>=0.1.10",
-    "google-genai>=3.0",
-    "openai>=3.0",
-    "anthropic>=2.0",
-    "sentry-sdk[fastapi]>=2.74",
+    "google-genai>=3.3.0",
+    "openai>=3.50.0",
+    "anthropic>=2.8.0",
+    "sentry-sdk[fastapi]>=2.75.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=9.2",
-    "pytest-asyncio>=1.4",
+    "pytest-asyncio>=1.5.0",
     "httpx>=0.28",
 ]
 
